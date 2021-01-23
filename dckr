@@ -1,0 +1,154 @@
+#!/bin/bash
+
+ini_path=~/.dckr
+ini_contents=()
+flag_help=0
+flag_verbose=0
+flag_list=0
+flag_describe=0
+flag_readonly=""
+arg_name=""
+definition_exists=0
+config_image=()
+config_args=()
+config_cmd=()
+
+dump_section() {
+  section=""
+  for line in "${ini_contents[@]}"; do
+    if [[ "$line" =~ \[\ *([a-zA-Z0-9_-]+)\ *\] ]]; then
+      section=${BASH_REMATCH[1]}
+      if [[ "$section" == "$1" ]]; then
+        eval definition_exists=1
+      fi
+      continue
+    fi
+    if [[ "$section" != "$1" ]]; then
+      continue
+    fi
+    if [[ "$line" =~ (image|args|cmd)\ *=\ *(.*) ]]; then
+      key=${BASH_REMATCH[1]}
+      value=${BASH_REMATCH[2]}
+      eval config_$key=\( $value \)
+    else
+      echo "Error: malformed syntax '$line'"
+      exit 1
+    fi
+  done
+}
+
+list_sections() {
+  for line in "${ini_contents[@]}"; do
+    if [[ $line =~ \[\ *([a-zA-Z0-9_-]+)\ *\] ]]; then
+      echo ${BASH_REMATCH[1]}
+    fi
+  done
+}
+
+# Parse flags meant for this script
+while true; do
+  if [[ "$1" != "-"* ]]; then
+    arg_name=$1
+    shift 1
+    break
+  fi
+  case $1 in
+    "-h" | "--help")
+      flag_help=1
+      ;;
+    "-v" | "--verbose")
+      flag_verbose=1
+      ;;
+    "-ls" | "--list")
+      flag_list=1
+      ;;
+    "-d" | "--describe")
+      flag_describe=1
+      ;;
+    "-ro" | "--readonly")
+      flag_readonly=":ro"
+      ;;
+    *)
+      echo "Error: Unrecognized flag $1"
+      exit 1
+  esac
+  shift 1
+done
+
+if [[ ! -f $ini_path ]]; then
+  echo "Error: no config file found '$ini_path'"
+  exit 1
+fi
+
+# Read the file and convert to line array
+IFS=$'\n' && file="$(<$ini_path)" ini_contents=( ${file} )
+
+# Print help
+if [[ "$flag_help" == 1 ]]; then
+  echo "dckr makes it quick and convenient to run something in a docker"
+  echo "container based on predefined configurations."
+  echo
+  echo "Usage: dckr [OPTIONS] NAME [ARGS]"
+  echo
+  echo "    OPTIONS   (See below)"
+  echo "    NAME      Refers to one specific configuration in ~/.dckr"
+  echo "    ARGS      Additional arguments that you want to be"
+  echo "              passed to 'docker run'"
+  echo
+  echo "Options:"
+  echo "    --help      -h    Print help"
+  echo "    --verbose   -v    Print docker command before executing"
+  echo "    --list      -ls   Print all available configurations"
+  echo "    --describe  -d    Print parameters for a configuration"
+  echo "    --readonly  -ro   Mount current directory as readonly"
+  exit 0
+fi
+
+# Print list
+if [[ "$flag_list" == 1 ]]; then
+  list_sections
+  exit 0
+fi
+
+# Dump config
+dump_section $arg_name
+
+if [[ "$arg_name" == "" ]]; then
+  echo "Error: no input argument given"
+  exit 1
+fi
+if [[ "$definition_exists" != "1" ]]; then
+  echo "Error: no configuration found for '$arg_name' in $ini_path"
+  exit 1
+fi
+if [[ "$config_image" == "" ]]; then
+  echo "Error: no image specified for '$arg_name' in $ini_path"
+  exit 1
+fi
+
+# Print info about image
+if [[ "$flag_describe" == 1 ]]; then
+  echo "Image: $config_image"
+  echo "Additional arguments: ${config_args[@]}"
+  echo "Command: ${config_cmd[@]}"
+  exit 0
+fi
+
+run=( \
+  --rm \
+  --tty \
+  --interactive \
+  --workdir=/app \
+  --volume=$(pwd):/app$flag_readonly \
+  "${config_args[@]}" \
+  "${@}" \
+  $config_image \
+  "${config_cmd[@]}" \
+)
+
+if [[ "$flag_verbose" == 1 ]]; then
+  echo docker run ${run[@]}
+  echo
+fi
+
+docker run ${run[@]}
