@@ -40,6 +40,9 @@ config_cmd=()
 dump_section() {
   section=""
   for line in "${ini_contents[@]}"; do
+    if [[ "$line" =~ \;.* ]]; then
+      continue
+    fi
     if [[ "$line" =~ \[\ *([a-zA-Z0-9_-]+)\ *\] ]]; then
       section=${BASH_REMATCH[1]}
       if [[ "$section" == "$1" ]]; then
