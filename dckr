@@ -31,29 +31,35 @@ flag_verbose=0
 flag_list=0
 flag_describe=0
 flag_readonly=""
-arg_name=""
-definition_exists=0
+all_section_names=()
+section_name=""
+section_exists=0
+additional_args=()
+additional_cmd=()
 config_image=()
 config_args=()
 config_cmd=()
 
-dump_section() {
+parse_and_load() {
+  PATTERN_ENTRY='^[[:space:]]*(image|args|cmd)[[:space:]]*=[[:space:]]*(.*)'
+  PATTERN_SECTION='^[[:space:]]*\[[[:space:]]*([a-zA-Z0-9:._-]+)[[:space:]]*\]'
   section=""
   for line in "${ini_contents[@]}"; do
-    if [[ "$line" =~ [[:space:]]*\;.* ]] || [[ "$line" =~ ^[[:space:]]*$ ]]; then
+    if [[ "$line" =~ ^[[:space:]]*\;.* ]] || [[ "$line" =~ ^[[:space:]]*$ ]]; then
       continue
     fi
-    if [[ "$line" =~ \[[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*\] ]]; then
+    if [[ "$line" =~ $PATTERN_SECTION ]]; then
       section=${BASH_REMATCH[1]}
+      all_section_names+=( $section )
       if [[ "$section" == "$1" ]]; then
-        eval definition_exists=1
+        eval section_exists=1
       fi
       continue
     fi
     if [[ "$section" != "$1" ]]; then
       continue
     fi
-    if [[ "$line" =~ (image|args|cmd)[[:space:]]*=[[:space:]]*(.*) ]]; then
+    if [[ "$line" =~ $PATTERN_ENTRY ]]; then
       key=${BASH_REMATCH[1]}
       value=${BASH_REMATCH[2]}
       eval config_$key=\( $value \)
@@ -64,41 +70,31 @@ dump_section() {
   done
 }
 
-list_sections() {
-  for line in "${ini_contents[@]}"; do
-    if [[ $line =~ \[[[:space:]]*([a-zA-Z0-9_-]+)[[:space:]]*\] ]]; then
-      echo ${BASH_REMATCH[1]}
+while (( ${#@} )); do # Process input
+  if [[ "$section_name" == "" ]]; then # 1. Input meant for this script
+    if [[ "$1" =~ ^-.+ ]]; then # 2. dckr flags
+      case $1 in
+        "-h" | "--help") flag_help=1;;
+        "-v" | "--verbose") flag_verbose=1;;
+        "-ls" | "--list") flag_list=1;;
+        "-d" | "--describe") flag_describe=1;;
+        "-ro" | "--readonly") flag_readonly=":ro";;
+        *)
+          echo "Error: Unrecognized flag $1"
+          exit 1
+      esac
+    else # 3. Section name
+      section_name=$1
     fi
-  done
-}
-
-# Parse flags meant for this script
-while true; do
-  if [[ "$1" != "-"* ]]; then
-    arg_name=$1
-    shift 1
-    break
+  else
+    if [[ "$1" != "--" ]]; then # 4.Flags for docker run
+      additional_args+=($1)
+    else # 5. Separator
+      shift 1 # Skip `--` separator
+      additional_cmd="${@}"
+      break # done
+    fi
   fi
-  case $1 in
-    "-h" | "--help")
-      flag_help=1
-      ;;
-    "-v" | "--verbose")
-      flag_verbose=1
-      ;;
-    "-ls" | "--list")
-      flag_list=1
-      ;;
-    "-d" | "--describe")
-      flag_describe=1
-      ;;
-    "-ro" | "--readonly")
-      flag_readonly=":ro"
-      ;;
-    *)
-      echo "Error: Unrecognized flag $1"
-      exit 1
-  esac
   shift 1
 done
 
@@ -112,51 +108,55 @@ IFS=$'\n' && file="$(<$ini_path)" ini_contents=( ${file} )
 
 # Print help
 if [[ "$flag_help" == 1 ]]; then
-  echo "dckr makes it quick and convenient to run something in a docker"
-  echo "container based on predefined configurations."
+  echo "dckr is a command line utility that makes it quick and convenient"
+  echo "to execute predefined 'docker run' configurations."
   echo
-  echo "Usage: dckr [OPTIONS] NAME [ARGS]"
+  echo "Usage: dckr [OPTIONS] NAME [ARGS] [-- CMD]"
   echo
   echo "    OPTIONS   (See below)"
   echo "    NAME      Refers to one specific configuration in ~/.dckr"
   echo "    ARGS      Additional arguments that you want to be"
   echo "              passed to 'docker run'"
+  echo "    CMD       Additional command that you want to pass to the"
+  echo "              entrypoint (delimited by a double-dash)"
   echo
   echo "Options:"
   echo "    --help      -h    Print help"
   echo "    --verbose   -v    Print docker command before executing"
-  echo "    --list      -ls   Print all available configurations"
-  echo "    --describe  -d    Print parameters for a configuration"
+  echo "    --list      -ls   Enumerate all available configurations"
+  echo "    --describe  -d    Print parameters of a specific configuration"
   echo "    --readonly  -ro   Mount current directory as readonly"
   exit 0
 fi
 
-# Print list
+# Load config into env variables
+parse_and_load $section_name
+
+# Print list of all available configurations
 if [[ "$flag_list" == 1 ]]; then
-  list_sections
+  for s in "${all_section_names[@]}"; do
+    echo $s
+  done
   exit 0
 fi
 
-# Dump config
-dump_section $arg_name
-
-if [[ "$arg_name" == "" ]]; then
+if [[ "$section_name" == "" ]]; then
   echo "Error: no input argument given"
   exit 1
 fi
-if [[ "$definition_exists" != "1" ]]; then
-  echo "Error: no configuration found for '$arg_name' in $ini_path"
+if [[ "$section_exists" != "1" ]]; then
+  echo "Error: no configuration found for alias '$section_name' in $ini_path"
   exit 1
 fi
 if [[ "$config_image" == "" ]]; then
-  echo "Error: no image specified for '$arg_name' in $ini_path"
+  echo "Error: no image specified for alias '$section_name' in $ini_path"
   exit 1
 fi
 
 # Print info about image
 if [[ "$flag_describe" == 1 ]]; then
   echo "Image: $config_image"
-  echo "Additional arguments: ${config_args[@]}"
+  echo "Arguments: ${config_args[@]}"
   echo "Command: ${config_cmd[@]}"
   exit 0
 fi
@@ -165,12 +165,13 @@ run=( \
   --rm \
   --tty \
   --interactive \
-  --workdir=/app \
-  --volume=$(pwd):/app$flag_readonly \
+  --workdir=/dckr \
+  --volume=$(pwd):/dckr$flag_readonly \
   "${config_args[@]}" \
-  "${@}" \
+  "${additional_args[@]}" \
   $config_image \
   "${config_cmd[@]}" \
+  "${additional_cmd[@]}" \
 )
 
 if [[ "$flag_verbose" == 1 ]]; then
