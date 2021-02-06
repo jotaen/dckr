@@ -8,8 +8,8 @@ Under the hood, *dckr* is a thin wrapper around `docker run`. You can store run 
 
 1. [Download the dckr bash script](https://raw.githubusercontent.com/jotaen/dckr/main/dckr) (via right-click, save as)
 2. Make it executable: `chmod +x dckr`
-3. Put it in your path, e.g.: `mv dckr /usr/local/bin`
-4. Create a config file at `~/.dckr`
+3. Put it in your path, e.g.: `mv dckr /usr/local/bin/dckr` (might require `sudo`)
+4. Create a config file at `~/.dckr` (see below)
 
 ## Usage
 
